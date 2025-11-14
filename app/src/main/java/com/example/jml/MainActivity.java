@@ -28,13 +28,17 @@ public class MainActivity extends AppCompatActivity {
     private static final String KEY_IS_LOGGED_IN = "isLoggedIn";
     private static final String KEY_COOKIES = "cookies";
 
+    // Константы для тем подписок
+    private static final String TOPIC_ALL_USERS = "all_users";
+    private static final String TOPIC_LOGGED_IN_USERS = "logged_in_users";
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
 
-        // Подписываемся на тему для уведомлений
-        subscribeToTopics();
+        // Подписываемся на базовую тему для всех пользователей
+        subscribeToTopic(TOPIC_ALL_USERS);
 
         // Находим WebView по ID
         myWebView = findViewById(R.id.webview);
@@ -79,11 +83,9 @@ public class MainActivity extends AppCompatActivity {
 
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, String url) {
-                // Если URL содержит выходотмечаем как выход
+                // Если URL содержит выход, отмечаем как выход
                 if (url.contains("logout") || url.contains("task=user.logout")) {
-                    setLoggedIn(false);
-                    clearCookies();
-                    Toast.makeText(MainActivity.this, "Выход выполнен", Toast.LENGTH_SHORT).show();
+                    handleUserLogout();
                 }
 
                 view.loadUrl(url);
@@ -95,15 +97,31 @@ public class MainActivity extends AppCompatActivity {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
                     String url = request.getUrl().toString();
                     if (url.contains("logout") || url.contains("task=user.logout")) {
-                        setLoggedIn(false);
-                        clearCookies();
-                        Toast.makeText(MainActivity.this, "Выход выполнен", Toast.LENGTH_SHORT).show();
+                        handleUserLogout();
                     }
                     view.loadUrl(url);
                 }
                 return true;
             }
         });
+    }
+
+    // Обработка выхода пользователя
+    private void handleUserLogout() {
+        setLoggedIn(false);
+        clearCookies();
+        // Отписываемся от темы залогиненных пользователей
+        unsubscribeFromTopic(TOPIC_LOGGED_IN_USERS);
+        Toast.makeText(MainActivity.this, "Выход выполнен", Toast.LENGTH_SHORT).show();
+    }
+
+    // Обработка входа пользователя
+    private void handleUserLogin() {
+        setLoggedIn(true);
+        saveCookies();
+        // Подписываемся на тему залогиненных пользователей
+        subscribeToTopic(TOPIC_LOGGED_IN_USERS);
+        Toast.makeText(MainActivity.this, "Вход выполнен успешно", Toast.LENGTH_SHORT).show();
     }
 
     // Сохранение кук
@@ -150,12 +168,31 @@ public class MainActivity extends AppCompatActivity {
         Log.d(TAG, "Cookies cleared");
     }
 
-    //Подписка на рассылку
-    private void subscribeToTopics() {
-        FirebaseMessaging.getInstance().subscribeToTopic("all_users")
+    // Подписка на тему
+    private void subscribeToTopic(String topic) {
+        FirebaseMessaging.getInstance().subscribeToTopic(topic)
                 .addOnCompleteListener(task -> {
-                    String msg = task.isSuccessful() ? "Подписан на группу" : "Ошибка подписки";
+                    String msg = task.isSuccessful() ?
+                            "Подписан на тему: " + topic :
+                            "Ошибка подписки на тему: " + topic;
                     Log.d(TAG, msg);
+                    if (!task.isSuccessful()) {
+                        Log.e(TAG, "Ошибка подписки", task.getException());
+                    }
+                });
+    }
+
+    // Отписка от темы
+    private void unsubscribeFromTopic(String topic) {
+        FirebaseMessaging.getInstance().unsubscribeFromTopic(topic)
+                .addOnCompleteListener(task -> {
+                    String msg = task.isSuccessful() ?
+                            "Отписан от темы: " + topic :
+                            "Ошибка отписки от темы: " + topic;
+                    Log.d(TAG, msg);
+                    if (!task.isSuccessful()) {
+                        Log.e(TAG, "Ошибка отписки", task.getException());
+                    }
                 });
     }
 
@@ -176,6 +213,8 @@ public class MainActivity extends AppCompatActivity {
         if (lastUrl != null && isLoggedIn) {
             // Восстанавливаем сессию
             myWebView.loadUrl(lastUrl);
+            // Подписываемся на тему залогиненных пользователей
+            subscribeToTopic(TOPIC_LOGGED_IN_USERS);
             Log.d(TAG, "Восстановлена сессия: " + lastUrl);
         } else {
             // Загружаем стартовую страницу
@@ -213,10 +252,9 @@ public class MainActivity extends AppCompatActivity {
                     Log.d(TAG, "Статус входа: " + status);
 
                     if ("logged_in".equals(status)) {
-                        setLoggedIn(true);
-                        saveCookies(); // Сохраняем куки при успешном входе
+                        handleUserLogin();
                     } else if ("not_logged_in".equals(status)) {
-                        setLoggedIn(false);
+                        handleUserLogout();
                     }
                 }
             });
@@ -253,18 +291,14 @@ public class MainActivity extends AppCompatActivity {
         @JavascriptInterface
         public void onUserLogin() {
             runOnUiThread(() -> {
-                setLoggedIn(true);
-                saveCookies();
-                Toast.makeText(mContext, "Вход выполнен успешно", Toast.LENGTH_SHORT).show();
+                handleUserLogin();
             });
         }
 
         @JavascriptInterface
         public void onUserLogout() {
             runOnUiThread(() -> {
-                setLoggedIn(false);
-                clearCookies();
-                Toast.makeText(mContext, "Выход выполнен", Toast.LENGTH_SHORT).show();
+                handleUserLogout();
             });
         }
 

@@ -168,7 +168,7 @@ public class MainActivity extends AppCompatActivity {
         Log.d(TAG, "Cookies cleared");
     }
 
-    // Подписка на тему
+    // Подписка на тем
     private void subscribeToTopic(String topic) {
         FirebaseMessaging.getInstance().subscribeToTopic(topic)
                 .addOnCompleteListener(task -> {

@@ -28,7 +28,6 @@ public class MainActivity extends AppCompatActivity {
     private static final String KEY_IS_LOGGED_IN = "isLoggedIn";
     private static final String KEY_COOKIES = "cookies";
 
-    // Константы для тем подписок
     private static final String TOPIC_ALL_USERS = "all_users";
     private static final String TOPIC_LOGGED_IN_USERS = "logged_in_users";
 
@@ -37,8 +36,8 @@ public class MainActivity extends AppCompatActivity {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
 
-        // Подписываемся на базовую тему для всех пользователей
-        subscribeToTopic(TOPIC_ALL_USERS);
+        // Подписываемся на тему для уведомлений
+        subscribeToTopics(TOPIC_ALL_USERS);
 
         // Находим WebView по ID
         myWebView = findViewById(R.id.webview);
@@ -83,9 +82,11 @@ public class MainActivity extends AppCompatActivity {
 
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, String url) {
-                // Если URL содержит выход, отмечаем как выход
+                // Если URL содержит выходотмечаем как выход
                 if (url.contains("logout") || url.contains("task=user.logout")) {
-                    handleUserLogout();
+                    setLoggedIn(false);
+                    clearCookies();
+                    Toast.makeText(MainActivity.this, "Выход выполнен", Toast.LENGTH_SHORT).show();
                 }
 
                 view.loadUrl(url);
@@ -97,31 +98,15 @@ public class MainActivity extends AppCompatActivity {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
                     String url = request.getUrl().toString();
                     if (url.contains("logout") || url.contains("task=user.logout")) {
-                        handleUserLogout();
+                        setLoggedIn(false);
+                        clearCookies();
+                        Toast.makeText(MainActivity.this, "Выход выполнен", Toast.LENGTH_SHORT).show();
                     }
                     view.loadUrl(url);
                 }
                 return true;
             }
         });
-    }
-
-    // Обработка выхода пользователя
-    private void handleUserLogout() {
-        setLoggedIn(false);
-        clearCookies();
-        // Отписываемся от темы залогиненных пользователей
-        unsubscribeFromTopic(TOPIC_LOGGED_IN_USERS);
-        Toast.makeText(MainActivity.this, "Выход выполнен", Toast.LENGTH_SHORT).show();
-    }
-
-    // Обработка входа пользователя
-    private void handleUserLogin() {
-        setLoggedIn(true);
-        saveCookies();
-        // Подписываемся на тему залогиненных пользователей
-        subscribeToTopic(TOPIC_LOGGED_IN_USERS);
-        Toast.makeText(MainActivity.this, "Вход выполнен успешно", Toast.LENGTH_SHORT).show();
     }
 
     // Сохранение кук
@@ -168,31 +153,20 @@ public class MainActivity extends AppCompatActivity {
         Log.d(TAG, "Cookies cleared");
     }
 
-    // Подписка на тем
-    private void subscribeToTopic(String topic) {
+    //Подписка на рассылку
+    private void subscribeToTopics(String topic) {
         FirebaseMessaging.getInstance().subscribeToTopic(topic)
                 .addOnCompleteListener(task -> {
-                    String msg = task.isSuccessful() ?
-                            "Подписан на тему: " + topic :
-                            "Ошибка подписки на тему: " + topic;
+                    String msg = task.isSuccessful() ? "Подписан на группу " + topic: "Ошибка подписки " + topic;
                     Log.d(TAG, msg);
-                    if (!task.isSuccessful()) {
-                        Log.e(TAG, "Ошибка подписки", task.getException());
-                    }
                 });
     }
 
-    // Отписка от темы
-    private void unsubscribeFromTopic(String topic) {
+    private void unsubscribeFromTopics(String topic) {
         FirebaseMessaging.getInstance().unsubscribeFromTopic(topic)
                 .addOnCompleteListener(task -> {
-                    String msg = task.isSuccessful() ?
-                            "Отписан от темы: " + topic :
-                            "Ошибка отписки от темы: " + topic;
+                    String msg = task.isSuccessful() ? "Отписан от группу " + topic: "Ошибка отписки " + topic;
                     Log.d(TAG, msg);
-                    if (!task.isSuccessful()) {
-                        Log.e(TAG, "Ошибка отписки", task.getException());
-                    }
                 });
     }
 
@@ -210,11 +184,11 @@ public class MainActivity extends AppCompatActivity {
         String lastUrl = prefs.getString(KEY_LAST_URL, null);
         boolean isLoggedIn = prefs.getBoolean(KEY_IS_LOGGED_IN, false);
 
+
         if (lastUrl != null && isLoggedIn) {
             // Восстанавливаем сессию
             myWebView.loadUrl(lastUrl);
-            // Подписываемся на тему залогиненных пользователей
-            subscribeToTopic(TOPIC_LOGGED_IN_USERS);
+            subscribeToTopics(TOPIC_LOGGED_IN_USERS);
             Log.d(TAG, "Восстановлена сессия: " + lastUrl);
         } else {
             // Загружаем стартовую страницу
@@ -227,6 +201,11 @@ public class MainActivity extends AppCompatActivity {
         SharedPreferences.Editor editor = prefs.edit();
         editor.putBoolean(KEY_IS_LOGGED_IN, isLoggedIn);
         editor.apply();
+        if(isLoggedIn){
+            subscribeToTopics(TOPIC_LOGGED_IN_USERS);
+        }else {
+            unsubscribeFromTopics(TOPIC_LOGGED_IN_USERS);
+        }
 
         Log.d(TAG, "Статус входа: " + (isLoggedIn ? "Вход выполнен" : "Выход выполнен"));
     }
@@ -252,9 +231,10 @@ public class MainActivity extends AppCompatActivity {
                     Log.d(TAG, "Статус входа: " + status);
 
                     if ("logged_in".equals(status)) {
-                        handleUserLogin();
+                        setLoggedIn(true);
+                        saveCookies(); // Сохраняем куки при успешном входе
                     } else if ("not_logged_in".equals(status)) {
-                        handleUserLogout();
+                        setLoggedIn(false);
                     }
                 }
             });
@@ -291,14 +271,18 @@ public class MainActivity extends AppCompatActivity {
         @JavascriptInterface
         public void onUserLogin() {
             runOnUiThread(() -> {
-                handleUserLogin();
+                setLoggedIn(true);
+                saveCookies();
+                Toast.makeText(mContext, "Вход выполнен успешно", Toast.LENGTH_SHORT).show();
             });
         }
 
         @JavascriptInterface
         public void onUserLogout() {
             runOnUiThread(() -> {
-                handleUserLogout();
+                setLoggedIn(false);
+                clearCookies();
+                Toast.makeText(mContext, "Выход выполнен", Toast.LENGTH_SHORT).show();
             });
         }
 

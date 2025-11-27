@@ -1,19 +1,26 @@
 package com.example.jml;
 
+import android.app.AlertDialog;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.content.Context;
+import android.content.Intent;
 import android.content.SharedPreferences;
 import android.os.Build;
 import android.os.Bundle;
 import android.util.Log;
 import android.webkit.CookieManager;
-import android.webkit.WebView;
-import android.webkit.WebViewClient;
-import android.webkit.WebSettings;
 import android.webkit.JavascriptInterface;
 import android.webkit.WebResourceRequest;
+import android.webkit.WebSettings;
+import android.webkit.WebView;
+import android.webkit.WebViewClient;
 import android.widget.Toast;
+import android.view.ViewGroup;
+import android.view.Window;
+import android.view.WindowManager;
+import android.widget.ScrollView;
+import android.widget.TextView;
 
 import androidx.appcompat.app.AppCompatActivity;
 
@@ -31,10 +38,14 @@ public class MainActivity extends AppCompatActivity {
     private static final String TOPIC_ALL_USERS = "all_users";
     private static final String TOPIC_LOGGED_IN_USERS = "logged_in_users";
 
+    private boolean wasNotificationHandled = false;
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
+
+        Log.d(TAG, "onCreate called");
 
         // Подписываемся на тему для уведомлений
         subscribeToTopics(TOPIC_ALL_USERS);
@@ -43,8 +54,216 @@ public class MainActivity extends AppCompatActivity {
         myWebView = findViewById(R.id.webview);
         setupWebView();
 
-        // Загружаем сохраненную сессию или стартовую страницу
-        loadSavedSession();
+        // Сначала обрабатываем входящие уведомления
+        handleIncomingNotification(getIntent());
+
+        // Затем загружаем сессию (если не было уведомления)
+        if (!wasNotificationHandled) {
+            loadSavedSession();
+        }
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        Log.d(TAG, "onNewIntent called");
+        setIntent(intent); // Важно: обновляем текущий intent
+        handleIncomingNotification(intent);
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        AppLifecycleManager.setAppInForeground(true);
+        restoreCookies();
+
+        // Проверяем интент еще раз в onResume на случай, если приложение было в фоне
+        handleIncomingNotification(getIntent());
+    }
+
+    @Override
+    protected void onPause() {
+        super.onPause();
+        AppLifecycleManager.setAppInForeground(false);
+        saveLastUrl(myWebView.getUrl());
+        saveCookies();
+    }
+
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+        saveCookies();
+    }
+
+    private void handleIncomingNotification(Intent intent) {
+        Log.d(TAG, "handleIncomingNotification called");
+        Log.d(TAG, "Intent action: " + intent.getAction());
+
+        if (intent.getExtras() != null) {
+            Log.d(TAG, "Intent extras keys: " + intent.getExtras().keySet());
+
+            // Логируем все extras для отладки
+            Bundle extras = intent.getExtras();
+            for (String key : extras.keySet()) {
+                Object value = extras.get(key);
+                Log.d(TAG, "Extra [" + key + "]: " + value);
+            }
+        }
+
+        // Проверяем разные возможные сценарии получения уведомления
+        boolean shouldShowDialog = false;
+        String title = null;
+        String message = null;
+        Bundle notificationExtras = null;
+
+        // 1 Кастомное действие от FCM
+        if (intent != null && (
+                "SHOW_DIALOG_FROM_NOTIFICATION".equals(intent.getAction()) ||
+                        "SHOW_DIALOG_FROM_FOREGROUND".equals(intent.getAction()))) {
+            shouldShowDialog = true;
+            title = intent.getStringExtra("title");
+            message = intent.getStringExtra("message");
+            notificationExtras = intent.getExtras();
+        }
+        // 2 Стандартный MAIN action с данными FCM
+        else if (intent != null &&
+                "android.intent.action.MAIN".equals(intent.getAction()) &&
+                intent.hasExtra("from_fcm_notification")) {
+            shouldShowDialog = true;
+            title = intent.getStringExtra("title");
+            message = intent.getStringExtra("message");
+            notificationExtras = intent.getExtras();
+        }
+        // 3 Данные FCM в extras (когда приложение запускается из уведомления)
+        else if (intent != null && intent.getExtras() != null) {
+            Bundle extras = intent.getExtras();
+
+            // Проверяем наличие данных FCM
+            if (extras.containsKey("google.message_id") ||
+                    extras.containsKey("from") ||
+                    extras.containsKey("collapse_key")) {
+
+                // Ищем title и message в разных местах
+                title = extras.getString("title");
+                message = extras.getString("body");
+
+                // Если не нашли, проверяем в analytics_data
+                if ((title == null || message == null) && extras.containsKey("gcm.n.analytics_data")) {
+                    Bundle analyticsData = extras.getBundle("gcm.n.analytics_data");
+                    if (analyticsData != null) {
+                        if (title == null) title = analyticsData.getString("title");
+                        if (message == null) message = analyticsData.getString("body");
+                        if (message == null) message = analyticsData.getString("message");
+                    }
+                }
+
+                // Если все еще нет, используем значения по умолчанию
+                if (title == null) title = "Мое приложение";
+                if (message == null) message = "Это диалоговая пустышка для демонстрации перехода через уведомление, а также напоминание на переназначения функции, как сделано при обработке" +
+                        " сообщения внутри приложения, не забудь!!!"
+                        +" Сначала обработка, а потом чтение, а не наоборот";
+
+
+                shouldShowDialog = true;
+                notificationExtras = extras;
+            }
+        }
+
+        if (shouldShowDialog && title != null && message != null) {
+            Log.d(TAG, "Notification received - Title: " + title + ", Message: " + message);
+            showNotificationDialog(title, message, notificationExtras);
+            wasNotificationHandled = true;
+
+            // Очищаем action и extras чтобы диалог не показывался повторно
+            intent.setAction(null);
+            if (intent.getExtras() != null) {
+                intent.getExtras().clear();
+            }
+        } else {
+            Log.d(TAG, "No notification data found or incomplete data");
+        }
+    }
+
+    private void showNotificationDialog(String title, String message, Bundle extras) {
+        Log.d(TAG, "showNotificationDialog called");
+
+        runOnUiThread(() -> {
+            AlertDialog.Builder builder = new AlertDialog.Builder(this);
+
+            // Собираем полное сообщение
+            StringBuilder fullMessage = new StringBuilder();
+            fullMessage.append(message);
+
+            // Добавляем дополнительную информацию из data payload если есть
+            if (extras != null) {
+                Bundle dataBundle = extras.getBundle("notification_data");
+                if (dataBundle != null && !dataBundle.isEmpty()) {
+                    fullMessage.append("\n\nДополнительные данные:\n");
+
+                    for (String key : dataBundle.keySet()) {
+                        if (!"title".equals(key) && !"body".equals(key) && !"message".equals(key)) {
+                            String value = dataBundle.getString(key);
+                            if (value != null) {
+                                fullMessage.append("• ").append(key).append(": ").append(value).append("\n");
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Создаем ScrollView с TextView внутри
+            ScrollView scrollView = new ScrollView(this);
+            TextView messageView = new TextView(this);
+
+            // Настраиваем TextView
+            messageView.setText(fullMessage.toString());
+            messageView.setTextSize(16);
+            messageView.setPadding(50, 30, 50, 30);
+            messageView.setTextIsSelectable(true); // выделение текста
+
+            // Добавляем TextView в ScrollView
+            scrollView.addView(messageView);
+
+            // фиксированные размеры для ScrollView
+            int maxHeight = (int) (getResources().getDisplayMetrics().heightPixels * 0.5); // 50% высоты экрана
+            int maxWidth = (int) (getResources().getDisplayMetrics().widthPixels * 0.9); // 90% ширины экрана
+
+            // Устанавливаем размеры для ScrollView через LayoutParams
+            scrollView.setLayoutParams(new ViewGroup.LayoutParams(
+                    maxWidth,
+                    ViewGroup.LayoutParams.WRAP_CONTENT
+            ));
+
+            builder.setTitle(title)
+                    .setView(scrollView) // Используем setView вместо setMessage
+                    .setPositiveButton("OK", (dialog, which) -> {
+                        dialog.dismiss();
+                        // Если приложение было запущено из уведомления, загружаем сессию после закрытия диалога
+                        if (wasNotificationHandled && myWebView != null) {
+                            loadSavedSession();
+                        }
+                    })
+                    .setCancelable(true);
+
+            AlertDialog dialog = builder.create();
+
+            // Устанавливаем фиксированный размер окна
+            Window window = dialog.getWindow();
+            if (window != null) {
+                WindowManager.LayoutParams layoutParams = new WindowManager.LayoutParams();
+                layoutParams.copyFrom(window.getAttributes());
+                layoutParams.width = maxWidth;
+                layoutParams.height = WindowManager.LayoutParams.WRAP_CONTENT;
+                window.setAttributes(layoutParams);
+
+                // Ограничиваем максимальную высоту через WindowManager
+                window.setLayout(maxWidth, WindowManager.LayoutParams.WRAP_CONTENT);
+            }
+
+            dialog.show();
+
+            Log.d(TAG, "Dialog shown successfully");
+        });
     }
 
     private void setupWebView() {
@@ -52,7 +271,6 @@ public class MainActivity extends AppCompatActivity {
         webSettings.setJavaScriptEnabled(true);
         webSettings.setDomStorageEnabled(true);
         webSettings.setDatabaseEnabled(true);
-
         webSettings.setCacheMode(WebSettings.LOAD_DEFAULT);
 
         //настройка кук
@@ -184,7 +402,6 @@ public class MainActivity extends AppCompatActivity {
         String lastUrl = prefs.getString(KEY_LAST_URL, null);
         boolean isLoggedIn = prefs.getBoolean(KEY_IS_LOGGED_IN, false);
 
-
         if (lastUrl != null && isLoggedIn) {
             // Восстанавливаем сессию
             myWebView.loadUrl(lastUrl);
@@ -232,32 +449,13 @@ public class MainActivity extends AppCompatActivity {
 
                     if ("logged_in".equals(status)) {
                         setLoggedIn(true);
-                        saveCookies(); // Сохраняем куки при успешном входе
+                        saveCookies();
                     } else if ("not_logged_in".equals(status)) {
                         setLoggedIn(false);
                     }
                 }
             });
         }
-    }
-
-    @Override
-    protected void onPause() {
-        super.onPause();
-        saveLastUrl(myWebView.getUrl());
-        saveCookies();
-    }
-
-    @Override
-    protected void onResume() {
-        super.onResume();
-        restoreCookies();
-    }
-
-    @Override
-    protected void onDestroy() {
-        super.onDestroy();
-        saveCookies();
     }
 
     // JavaScript Interface

@@ -26,6 +26,15 @@ import androidx.appcompat.app.AppCompatActivity;
 
 import com.google.firebase.messaging.FirebaseMessaging;
 
+import org.json.JSONArray;
+import org.json.JSONObject;
+
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
+
 public class MainActivity extends AppCompatActivity {
 
     private WebView myWebView;
@@ -34,11 +43,13 @@ public class MainActivity extends AppCompatActivity {
     private static final String KEY_LAST_URL = "lastUrl";
     private static final String KEY_IS_LOGGED_IN = "isLoggedIn";
     private static final String KEY_COOKIES = "cookies";
+    private static final String APP_NOTIFICATIONS_PREFS = "app_notifications";
 
     private static final String TOPIC_ALL_USERS = "all_users";
     private static final String TOPIC_LOGGED_IN_USERS = "logged_in_users";
 
     private boolean wasNotificationHandled = false;
+    private long lastNotificationTime = 0;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -46,6 +57,10 @@ public class MainActivity extends AppCompatActivity {
         setContentView(R.layout.activity_main);
 
         Log.d(TAG, "onCreate called");
+        debugIntent(getIntent());
+
+        wasNotificationHandled = false;
+        lastNotificationTime = 0;
 
         // Подписываемся на тему для уведомлений
         subscribeToTopics(TOPIC_ALL_USERS);
@@ -55,9 +70,15 @@ public class MainActivity extends AppCompatActivity {
         setupWebView();
 
         // Сначала обрабатываем входящие уведомления
-        handleIncomingNotification(getIntent());
+        processIntentForNotification(getIntent());
 
-        // Затем загружаем сессию (если не было уведомления)
+        // Затем проверяем сохраненные уведомления из SharedPreferences
+        checkAppNotifications();
+
+        // Затем проверяем сохраненные уведомления из NotificationStorage
+        checkSavedNotifications();
+
+        // Загружаем сессию (если не было уведомления)
         if (!wasNotificationHandled) {
             loadSavedSession();
         }
@@ -67,8 +88,9 @@ public class MainActivity extends AppCompatActivity {
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
         Log.d(TAG, "onNewIntent called");
-        setIntent(intent); // Важно: обновляем текущий intent
-        handleIncomingNotification(intent);
+        setIntent(intent);
+        debugIntent(intent);
+        processIntentForNotification(intent);
     }
 
     @Override
@@ -77,8 +99,12 @@ public class MainActivity extends AppCompatActivity {
         AppLifecycleManager.setAppInForeground(true);
         restoreCookies();
 
-        // Проверяем интент еще раз в onResume на случай, если приложение было в фоне
-        handleIncomingNotification(getIntent());
+        // При входе проверяем сохраненные уведомления
+        checkAppNotifications();
+        checkSavedNotifications();
+
+        // Проверяем интент
+        processIntentForNotification(getIntent());
     }
 
     @Override
@@ -95,117 +121,366 @@ public class MainActivity extends AppCompatActivity {
         saveCookies();
     }
 
-    private void handleIncomingNotification(Intent intent) {
-        Log.d(TAG, "handleIncomingNotification called");
-        Log.d(TAG, "Intent action: " + intent.getAction());
+    private void debugIntent(Intent intent) {
+        if (intent == null) {
+            Log.d(TAG, "Intent is null");
+            return;
+        }
+
+        Log.d(TAG, "=== DEBUG INTENT ===");
+        Log.d(TAG, "Action: " + intent.getAction());
+        Log.d(TAG, "Data: " + intent.getData());
+        Log.d(TAG, "Flags: " + intent.getFlags());
+        Log.d(TAG, "Component: " + intent.getComponent());
 
         if (intent.getExtras() != null) {
-            Log.d(TAG, "Intent extras keys: " + intent.getExtras().keySet());
-
-            // Логируем все extras для отладки
             Bundle extras = intent.getExtras();
+            Log.d(TAG, "Extras count: " + extras.size());
+
             for (String key : extras.keySet()) {
                 Object value = extras.get(key);
-                Log.d(TAG, "Extra [" + key + "]: " + value);
+                String valueStr;
+                if (value instanceof String) {
+                    valueStr = "\"" + value + "\"";
+                } else {
+                    valueStr = String.valueOf(value);
+                }
+                Log.d(TAG, "  [" + key + "] = " + valueStr +
+                        " (type: " + (value != null ? value.getClass().getSimpleName() : "null") + ")");
+            }
+        }
+        Log.d(TAG, "=== END DEBUG ===");
+    }
+
+    private void processIntentForNotification(Intent intent) {
+        Log.d(TAG, "processIntentForNotification called");
+
+        if (intent == null) {
+            Log.d(TAG, "Intent is null");
+            return;
+        }
+
+        debugIntent(intent);
+
+        // Проверяем время
+        long currentTime = System.currentTimeMillis();
+        long intentTime = intent.getLongExtra("timestamp", 0);
+
+        if (intentTime > 0 && (currentTime - intentTime) > 30000) {
+            Log.d(TAG, "Ignoring old intent");
+            return;
+        }
+
+        // 1. Проверяем наше кастомное действие из сервиса
+        if ("SHOW_NOTIFICATION_FROM_SERVICE".equals(intent.getAction())) {
+            Log.d(TAG, "SHOW_NOTIFICATION_FROM_SERVICE action");
+
+            String title = intent.getStringExtra("title");
+            String body = intent.getStringExtra("body");
+
+            if (title != null || body != null) {
+                String actualTitle = title != null ? title : "Мое приложение";
+                String actualBody = body != null ? body : "Новое уведомление";
+
+                Log.d(TAG, "Showing notification from service: " + actualTitle);
+                createAndShowNotification(actualTitle, actualBody, intent.getExtras());
+                return;
             }
         }
 
-        // Проверяем разные возможные сценарии получения уведомления
-        boolean shouldShowDialog = false;
-        String title = null;
-        String message = null;
-        Bundle notificationExtras = null;
+        // 2. Проверяем ACTION_MAIN с from_system_notification
+        if (Intent.ACTION_MAIN.equals(intent.getAction()) &&
+                intent.getBooleanExtra("from_system_notification", false)) {
+            Log.d(TAG, "ACTION_MAIN from system notification");
 
-        // 1 Кастомное действие от FCM
-        if (intent != null && (
-                "SHOW_DIALOG_FROM_NOTIFICATION".equals(intent.getAction()) ||
-                        "SHOW_DIALOG_FROM_FOREGROUND".equals(intent.getAction()))) {
-            shouldShowDialog = true;
-            title = intent.getStringExtra("title");
-            message = intent.getStringExtra("message");
-            notificationExtras = intent.getExtras();
+            String title = intent.getStringExtra("title");
+            String body = intent.getStringExtra("body");
+
+            if (title != null || body != null) {
+                String actualTitle = title != null ? title : "Мое приложение";
+                String actualBody = body != null ? body : "Новое уведомление";
+
+                Log.d(TAG, "Showing notification from system click: " + actualTitle);
+                createAndShowNotification(actualTitle, actualBody, intent.getExtras());
+                return;
+            }
         }
-        // 2 Стандартный MAIN action с данными FCM
-        else if (intent != null &&
-                "android.intent.action.MAIN".equals(intent.getAction()) &&
-                intent.hasExtra("from_fcm_notification")) {
-            shouldShowDialog = true;
-            title = intent.getStringExtra("title");
-            message = intent.getStringExtra("message");
-            notificationExtras = intent.getExtras();
-        }
-        // 3 Данные FCM в extras (когда приложение запускается из уведомления)
-        else if (intent != null && intent.getExtras() != null) {
+
+        // 3. Проверяем ACTION_MAIN с данными FCM
+        if (Intent.ACTION_MAIN.equals(intent.getAction())) {
+            Log.d(TAG, "ACTION_MAIN intent received");
+
             Bundle extras = intent.getExtras();
+            if (extras != null) {
+                // Проверяем наличие FCM данных
+                boolean hasFcmData = extras.containsKey("google.message_id") ||
+                        extras.containsKey("gcm.message_id") ||
+                        extras.containsKey("from") ||
+                        extras.containsKey("gcm.n.analytics_data");
 
-            // Проверяем наличие данных FCM
-            if (extras.containsKey("google.message_id") ||
-                    extras.containsKey("from") ||
-                    extras.containsKey("collapse_key")) {
+                if (hasFcmData) {
+                    Log.d(TAG, "Found FCM data in ACTION_MAIN intent");
 
-                // Ищем title и message в разных местах
-                title = extras.getString("title");
-                message = extras.getString("body");
+                    // Извлекаем данные из analytics_data
+                    String title = null;
+                    String body = null;
 
-                // Если не нашли, проверяем в analytics_data
-                if ((title == null || message == null) && extras.containsKey("gcm.n.analytics_data")) {
-                    Bundle analyticsData = extras.getBundle("gcm.n.analytics_data");
-                    if (analyticsData != null) {
-                        if (title == null) title = analyticsData.getString("title");
-                        if (message == null) message = analyticsData.getString("body");
-                        if (message == null) message = analyticsData.getString("message");
+                    if (extras.containsKey("gcm.n.analytics_data")) {
+                        Bundle analyticsData = extras.getBundle("gcm.n.analytics_data");
+                        if (analyticsData != null) {
+                            // Пробуем получить title
+                            if (analyticsData.containsKey("google.c.a.c_l")) {
+                                title = analyticsData.getString("google.c.a.c_l");
+                                Log.d(TAG, "Got title from google.c.a.c_l: " + title);
+                            }
+
+                            // Пробуем найти body в других полях
+                            for (String key : analyticsData.keySet()) {
+                                if (key.contains("body") || key.contains("message") ||
+                                        key.contains("content") || key.contains("text")) {
+                                    Object value = analyticsData.get(key);
+                                    if (value instanceof String) {
+                                        body = (String) value;
+                                        Log.d(TAG, "Got body from " + key + ": " + body);
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if (title != null) {
+                        String actualTitle = title;
+                        String actualBody = body != null ? body : "Новое уведомление";
+
+                        Log.d(TAG, "Extracted notification - Title: " + actualTitle + ", Body: " + actualBody);
+                        createAndShowNotification(actualTitle, actualBody, extras);
+                        return;
                     }
                 }
-
-                // Если все еще нет, используем значения по умолчанию
-                if (title == null) title = "Мое приложение";
-                if (message == null) message = "Это диалоговая пустышка для демонстрации перехода через уведомление, а также напоминание на переназначения функции, как сделано при обработке" +
-                        " сообщения внутри приложения, не забудь!!!"
-                        +" Сначала обработка, а потом чтение, а не наоборот";
-
-
-                shouldShowDialog = true;
-                notificationExtras = extras;
             }
         }
 
-        if (shouldShowDialog && title != null && message != null) {
-            Log.d(TAG, "Notification received - Title: " + title + ", Message: " + message);
-            showNotificationDialog(title, message, notificationExtras);
-            wasNotificationHandled = true;
-
-            // Очищаем action и extras чтобы диалог не показывался повторно
-            intent.setAction(null);
-            if (intent.getExtras() != null) {
-                intent.getExtras().clear();
+        // 4. Проверяем другие кастомные действия
+        if ("SHOW_SAVED_NOTIFICATION".equals(intent.getAction())) {
+            Log.d(TAG, "SHOW_SAVED_NOTIFICATION action");
+            String notificationId = intent.getStringExtra("notification_id");
+            if (notificationId != null) {
+                showNotificationFromStorage(notificationId);
+                return;
             }
-        } else {
-            Log.d(TAG, "No notification data found or incomplete data");
+        }
+
+        // 5. Если ничего не нашли, проверяем сохраненные уведомления
+        Log.d(TAG, "No immediate notification data, checking saved notifications");
+        checkAppNotifications();
+        checkSavedNotifications();
+    }
+
+    private void checkAppNotifications() {
+        Log.d(TAG, "Checking app notifications from SharedPreferences");
+
+        SharedPreferences prefs = getSharedPreferences(APP_NOTIFICATIONS_PREFS, MODE_PRIVATE);
+        String notificationsJson = prefs.getString("notifications_list", "[]");
+        long lastNotificationTimePref = prefs.getLong("last_notification_time", 0);
+
+        // Проверяем не слишком ли старое уведомление (больше 5 минут)
+        long currentTime = System.currentTimeMillis();
+        if (currentTime - lastNotificationTimePref > 5 * 60 * 1000) {
+            Log.d(TAG, "Last notification is too old, clearing");
+            prefs.edit().clear().apply();
+            return;
+        }
+
+        try {
+            JSONArray jsonArray = new JSONArray(notificationsJson);
+            if (jsonArray.length() > 0) {
+                // Берем самое свежее уведомление
+                JSONObject latestNotification = jsonArray.getJSONObject(0);
+                String title = latestNotification.getString("title");
+                String body = latestNotification.getString("body");
+                long timestamp = latestNotification.getLong("timestamp");
+
+                Log.d(TAG, "Found app notification: " + title);
+
+                // Проверяем, не показывали ли мы уже это уведомление
+                long timeSinceLastNotification = currentTime - lastNotificationTime;
+                if (!wasNotificationHandled &&
+                        (currentTime - timestamp < 5 * 60 * 1000) &&
+                        timeSinceLastNotification > 1000) {
+
+                    // Создаем NotificationData
+                    Map<String, String> data = new HashMap<>();
+                    data.put("title", title);
+                    data.put("body", body);
+
+                    // Собираем все остальные поля
+                    Iterator<String> keys = latestNotification.keys();
+                    while (keys.hasNext()) {
+                        String key = keys.next();
+                        if (!key.equals("title") && !key.equals("body") && !key.equals("timestamp")) {
+                            data.put(key, latestNotification.getString(key));
+                        }
+                    }
+
+                    NotificationStorage.NotificationData notificationData =
+                            new NotificationStorage.NotificationData(
+                                    "app_pref_" + timestamp,
+                                    title,
+                                    body,
+                                    data,
+                                    timestamp
+                            );
+
+                    showNotificationDialog(notificationData);
+
+                    // Удаляем показанное уведомление из списка
+                    removeShownNotificationFromPrefs();
+                } else {
+                    Log.d(TAG, "App notification skipped (already shown or too recent)");
+                }
+            } else {
+                Log.d(TAG, "No app notifications found in SharedPreferences");
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "Error reading app notifications", e);
         }
     }
 
-    private void showNotificationDialog(String title, String message, Bundle extras) {
-        Log.d(TAG, "showNotificationDialog called");
+    private void removeShownNotificationFromPrefs() {
+        try {
+            SharedPreferences prefs = getSharedPreferences(APP_NOTIFICATIONS_PREFS, MODE_PRIVATE);
+            String notificationsJson = prefs.getString("notifications_list", "[]");
+
+            JSONArray jsonArray = new JSONArray(notificationsJson);
+            if (jsonArray.length() > 0) {
+                // Удаляем первое (последнее) уведомление
+                JSONArray newArray = new JSONArray();
+                for (int i = 1; i < jsonArray.length(); i++) {
+                    newArray.put(jsonArray.get(i));
+                }
+
+                prefs.edit()
+                        .putString("notifications_list", newArray.toString())
+                        .apply();
+
+                Log.d(TAG, "Removed shown notification from preferences");
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "Error removing shown notification", e);
+        }
+    }
+
+    private void checkSavedNotifications() {
+        Log.d(TAG, "Checking saved notifications from storage");
+
+        List<NotificationStorage.NotificationData> unshownNotifications =
+                NotificationStorage.getInstance(this).getUnshownNotifications();
+
+        if (!unshownNotifications.isEmpty()) {
+            Log.d(TAG, "Found " + unshownNotifications.size() + " unshown notifications");
+
+            // Показываем самое свежее уведомление
+            NotificationStorage.NotificationData latestNotification = unshownNotifications.get(0);
+
+            long timeSinceLastNotification = System.currentTimeMillis() - lastNotificationTime;
+
+            if (!wasNotificationHandled && timeSinceLastNotification > 1000) {
+                Log.d(TAG, "Showing latest unshown notification: " + latestNotification.title);
+                showNotificationDialog(latestNotification);
+            } else {
+                Log.d(TAG, "Notification already showing or shown too recently");
+            }
+        } else {
+            Log.d(TAG, "No unshown notifications found");
+        }
+    }
+
+    private void showNotificationFromStorage(String notificationId) {
+        Log.d(TAG, "Looking for notification with id: " + notificationId);
+
+        NotificationStorage.NotificationData notification =
+                NotificationStorage.getInstance(this).getNotificationById(notificationId);
+
+        if (notification != null) {
+            Log.d(TAG, "Found notification: " + notification.title);
+            showNotificationDialog(notification);
+        } else {
+            Log.d(TAG, "Notification with id " + notificationId + " not found");
+        }
+    }
+
+    private void createAndShowNotification(String title, String body, Bundle originalExtras) {
+        // Проверяем, не показывали ли мы уже такое уведомление
+        long timeSinceLastNotification = System.currentTimeMillis() - lastNotificationTime;
+        if (timeSinceLastNotification < 1000) {
+            Log.d(TAG, "Notification shown too recently, skipping");
+            return;
+        }
+
+        // Сохраняем уведомление
+        Map<String, String> data = new HashMap<>();
+        data.put("title", title);
+        data.put("body", body);
+        data.put("source", "intent");
+
+        // Сохраняем дополнительные данные если есть
+        if (originalExtras != null) {
+            for (String key : originalExtras.keySet()) {
+                Object value = originalExtras.get(key);
+                if (value instanceof String) {
+                    data.put(key, (String) value);
+                }
+            }
+        }
+
+        String notificationId = "intent_" + System.currentTimeMillis();
+
+        NotificationStorage.NotificationData notificationData =
+                new NotificationStorage.NotificationData(
+                        notificationId,
+                        title,
+                        body,
+                        data,
+                        System.currentTimeMillis()
+                );
+
+        // Сохраняем в хранилище
+        NotificationStorage.getInstance(this).saveNotification(notificationData);
+
+        // Показываем диалог
+        showNotificationDialog(notificationData);
+    }
+
+    private void showNotificationDialog(NotificationStorage.NotificationData notification) {
+        if (wasNotificationHandled) {
+            Log.d(TAG, "Dialog already showing, skipping notification: " + notification.id);
+            return;
+        }
+
+        Log.d(TAG, "Showing notification dialog: " + notification.id);
+        Log.d(TAG, "Title: " + notification.title);
+        Log.d(TAG, "Message: " + notification.message);
 
         runOnUiThread(() -> {
             AlertDialog.Builder builder = new AlertDialog.Builder(this);
 
             // Собираем полное сообщение
             StringBuilder fullMessage = new StringBuilder();
-            fullMessage.append(message);
+            fullMessage.append(notification.message);
 
             // Добавляем дополнительную информацию из data payload если есть
-            if (extras != null) {
-                Bundle dataBundle = extras.getBundle("notification_data");
-                if (dataBundle != null && !dataBundle.isEmpty()) {
-                    fullMessage.append("\n\nДополнительные данные:\n");
+            if (notification.data != null && !notification.data.isEmpty()) {
+                fullMessage.append("\n\nДополнительные данные:\n");
 
-                    for (String key : dataBundle.keySet()) {
-                        if (!"title".equals(key) && !"body".equals(key) && !"message".equals(key)) {
-                            String value = dataBundle.getString(key);
-                            if (value != null) {
-                                fullMessage.append("• ").append(key).append(": ").append(value).append("\n");
-                            }
+                for (Map.Entry<String, String> entry : notification.data.entrySet()) {
+                    String key = entry.getKey();
+                    String value = entry.getValue();
+
+                    // Пропускаем стандартные поля
+                    if (!"title".equals(key) && !"body".equals(key) && !"message".equals(key)) {
+                        if (value != null) {
+                            fullMessage.append("• ").append(key).append(": ").append(value).append("\n");
                         }
                     }
                 }
@@ -219,27 +494,42 @@ public class MainActivity extends AppCompatActivity {
             messageView.setText(fullMessage.toString());
             messageView.setTextSize(16);
             messageView.setPadding(50, 30, 50, 30);
-            messageView.setTextIsSelectable(true); // выделение текста
+            messageView.setTextIsSelectable(true);
 
             // Добавляем TextView в ScrollView
             scrollView.addView(messageView);
 
             // фиксированные размеры для ScrollView
-            int maxHeight = (int) (getResources().getDisplayMetrics().heightPixels * 0.5); // 50% высоты экрана
-            int maxWidth = (int) (getResources().getDisplayMetrics().widthPixels * 0.9); // 90% ширины экрана
+            int maxHeight = (int) (getResources().getDisplayMetrics().heightPixels * 0.5);
+            int maxWidth = (int) (getResources().getDisplayMetrics().widthPixels * 0.9);
 
-            // Устанавливаем размеры для ScrollView через LayoutParams
             scrollView.setLayoutParams(new ViewGroup.LayoutParams(
                     maxWidth,
                     ViewGroup.LayoutParams.WRAP_CONTENT
             ));
 
-            builder.setTitle(title)
-                    .setView(scrollView) // Используем setView вместо setMessage
+            builder.setTitle(notification.title)
+                    .setView(scrollView)
                     .setPositiveButton("OK", (dialog, which) -> {
                         dialog.dismiss();
-                        // Если приложение было запущено из уведомления, загружаем сессию после закрытия диалога
-                        if (wasNotificationHandled && myWebView != null) {
+                        wasNotificationHandled = false;
+
+                        // Помечаем уведомление как показанное
+                        NotificationStorage.getInstance(this).markAsShown(notification.id);
+
+                        // Загружаем сессию после закрытия диалога
+                        if (myWebView != null) {
+                            loadSavedSession();
+                        }
+                    })
+                    .setOnCancelListener(dialog -> {
+                        wasNotificationHandled = false;
+
+                        // Помечаем уведомление как показанное
+                        NotificationStorage.getInstance(this).markAsShown(notification.id);
+
+                        // Загружаем сессию
+                        if (myWebView != null) {
                             loadSavedSession();
                         }
                     })
@@ -255,14 +545,14 @@ public class MainActivity extends AppCompatActivity {
                 layoutParams.width = maxWidth;
                 layoutParams.height = WindowManager.LayoutParams.WRAP_CONTENT;
                 window.setAttributes(layoutParams);
-
-                // Ограничиваем максимальную высоту через WindowManager
                 window.setLayout(maxWidth, WindowManager.LayoutParams.WRAP_CONTENT);
             }
 
             dialog.show();
+            wasNotificationHandled = true;
+            lastNotificationTime = System.currentTimeMillis();
 
-            Log.d(TAG, "Dialog shown successfully");
+            Log.d(TAG, "Notification dialog shown: " + notification.id);
         });
     }
 

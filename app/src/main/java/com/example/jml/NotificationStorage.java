@@ -54,17 +54,11 @@ public class NotificationStorage {
 
     public void saveNotification(NotificationData notification) {
         try {
-            // Получаем текущий список
             List<NotificationData> notifications = getNotifications();
-
-            // Удаляем старые уведомления (старше 24 часов)
             long currentTime = System.currentTimeMillis();
             notifications.removeIf(n -> (currentTime - n.timestamp) > 24 * 60 * 60 * 1000);
+            notifications.add(0, notification);
 
-            // Добавляем новое уведомление
-            notifications.add(0, notification); // Добавляем в начало
-
-            // Сохраняем (максимум 20 уведомлений)
             if (notifications.size() > 20) {
                 notifications = notifications.subList(0, 20);
             }
@@ -92,7 +86,6 @@ public class NotificationStorage {
         }
     }
 
-    // ДОБАВЛЯЕМ ЭТОТ МЕТОД
     public NotificationData getNotificationById(String id) {
         try {
             List<NotificationData> notifications = getNotifications();

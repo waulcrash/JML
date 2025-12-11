@@ -24,7 +24,6 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
-import java.util.UUID;
 
 public class MyFirebaseMessagingService extends FirebaseMessagingService {
     private static final String TAG = "FCMService";
@@ -38,66 +37,127 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
 
     @Override
     public void onMessageReceived(RemoteMessage remoteMessage) {
+        Log.d(TAG, "=== NEW FCM MESSAGE RECEIVED ===");
         Log.d(TAG, "From: " + remoteMessage.getFrom());
 
         Map<String, String> data = remoteMessage.getData();
-        Log.d(TAG, "Message data payload: " + data);
+        Log.d(TAG, "Message data payload size: " + data.size());
 
-        if (remoteMessage.getNotification() != null) {
-            Log.d(TAG, "Notification payload - Title: " + remoteMessage.getNotification().getTitle() +
-                    ", Body: " + remoteMessage.getNotification().getBody());
+        // ЛОГИРУЕМ ВСЕ ДАННЫЕ ДЛЯ ОТЛАДКИ
+        if (!data.isEmpty()) {
+            Log.d(TAG, "Data payload content:");
+            for (Map.Entry<String, String> entry : data.entrySet()) {
+                Log.d(TAG, "  [" + entry.getKey() + "] = " + entry.getValue());
+            }
         }
 
-        // Получаем данные уведомления
+        if (remoteMessage.getNotification() != null) {
+            Log.d(TAG, "Notification payload:");
+            Log.d(TAG, "  Title: " + remoteMessage.getNotification().getTitle());
+            Log.d(TAG, "  Body: " + remoteMessage.getNotification().getBody());
+            Log.d(TAG, "  Click Action: " + remoteMessage.getNotification().getClickAction());
+            Log.d(TAG, "  Icon: " + remoteMessage.getNotification().getIcon());
+            Log.d(TAG, "  Tag: " + remoteMessage.getNotification().getTag());
+        }
+
         String title = "Мое приложение";
         String body = "Новое уведомление";
 
-        // Получаем данные из notification payload (Firebase Console)
+        // 1. Пробуем получить из notification payload (Firebase Console)
         if (remoteMessage.getNotification() != null) {
             if (remoteMessage.getNotification().getTitle() != null) {
                 title = remoteMessage.getNotification().getTitle();
+                Log.d(TAG, "Using title from notification payload: " + title);
             }
             if (remoteMessage.getNotification().getBody() != null) {
                 body = remoteMessage.getNotification().getBody();
+                Log.d(TAG, "Using body from notification payload: " + body);
             }
         }
 
-        // Data payload имеет приоритет (если отправляется с сервера)
+        // 2. Data payload имеет приоритет (если отправляется с сервера)
         if (data != null && !data.isEmpty()) {
+            // Проверяем все возможные ключи для title
             if (data.containsKey("title")) {
                 title = data.get("title");
+                Log.d(TAG, "Using title from data.title: " + title);
+            } else if (data.containsKey("subject")) {
+                title = data.get("subject");
+                Log.d(TAG, "Using title from data.subject: " + title);
+            } else if (data.containsKey("header")) {
+                title = data.get("header");
+                Log.d(TAG, "Using title from data.header: " + title);
+            } else if (data.containsKey("google.c.a.c_l")) {
+                title = data.get("google.c.a.c_l");
+                Log.d(TAG, "Using title from google.c.a.c_l: " + title);
             }
+
+            // Проверяем все возможные ключи для body
             if (data.containsKey("body")) {
                 body = data.get("body");
+                Log.d(TAG, "Using body from data.body: " + body);
             } else if (data.containsKey("message")) {
                 body = data.get("message");
+                Log.d(TAG, "Using body from data.message: " + body);
+            } else if (data.containsKey("text")) {
+                body = data.get("text");
+                Log.d(TAG, "Using body from data.text: " + body);
+            } else if (data.containsKey("content")) {
+                body = data.get("content");
+                Log.d(TAG, "Using body from data.content: " + body);
+            } else if (data.containsKey("description")) {
+                body = data.get("description");
+                Log.d(TAG, "Using body from data.description: " + body);
+            } else if (data.containsKey("google.c.a.c_c")) {
+                body = data.get("google.c.a.c_c");
+                Log.d(TAG, "Using body from google.c.a.c_c: " + body);
             }
         }
 
-        // ВАЖНО: Всегда сохраняем уведомление в SharedPreferences
+        Log.d(TAG, "Final notification - Title: " + title + ", Body: " + body);
+        Log.d(TAG, "App foreground: " + AppLifecycleManager.isAppInForeground());
+
+        // Всегда сохраняем уведомление
         saveNotificationToAppPreferences(title, body, data);
 
-        Log.d(TAG, "Notification processed - Title: " + title + ", Body: " + body);
-
-        // Если приложение в foreground - показываем диалог
+        // ПРОВЕРЯЕМ: если приложение в foreground, НЕ показываем системное уведомление
         if (AppLifecycleManager.isAppInForeground()) {
-            Log.d(TAG, "App is in foreground, showing dialog");
-            showDialogDirectly(title, body);
+            Log.d(TAG, "App is in foreground, NOT showing system notification");
+            // Отправляем broadcast для обновления UI в MainActivity
+            sendNotificationToMainActivity(title, body, data);
         } else {
-            // Если приложение в background - показываем системное уведомление
             Log.d(TAG, "App is in background, showing system notification");
+            // Показываем системное уведомление
             showSystemNotification(title, body, data);
         }
+
+        Log.d(TAG, "=== END FCM MESSAGE PROCESSING ===");
     }
 
-    // Сохраняем уведомление в SharedPreferences приложения
+    private void sendNotificationToMainActivity(String title, String body, Map<String, String> data) {
+        // Отправляем broadcast для обновления UI в MainActivity
+        Intent intent = new Intent("NEW_NOTIFICATION_RECEIVED");
+        intent.putExtra("title", title);
+        intent.putExtra("body", body);
+        intent.putExtra("timestamp", System.currentTimeMillis());
+
+        if (data != null && !data.isEmpty()) {
+            Bundle bundle = new Bundle();
+            for (Map.Entry<String, String> entry : data.entrySet()) {
+                bundle.putString(entry.getKey(), entry.getValue());
+            }
+            intent.putExtras(bundle);
+        }
+
+        sendBroadcast(intent);
+        Log.d(TAG, "Sent broadcast to MainActivity for notification: " + title);
+    }
+
     private void saveNotificationToAppPreferences(String title, String body, Map<String, String> data) {
         try {
-            // Используем SharedPreferences самого приложения
             SharedPreferences prefs = getSharedPreferences("app_notifications", MODE_PRIVATE);
             SharedPreferences.Editor editor = prefs.edit();
 
-            // Сохраняем последние 5 уведомлений (ротация)
             String notificationsJson = prefs.getString("notifications_list", "[]");
             List<Map<String, String>> notificationsList = new ArrayList<>();
 
@@ -117,7 +177,6 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
                 Log.e(TAG, "Error parsing notifications list", e);
             }
 
-            // Добавляем новое уведомление
             Map<String, String> newNotification = new HashMap<>();
             newNotification.put("title", title);
             newNotification.put("body", body);
@@ -127,14 +186,11 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
                 newNotification.putAll(data);
             }
 
-            notificationsList.add(0, newNotification); // Добавляем в начало
-
-            // Ограничиваем список 5 элементами
+            notificationsList.add(0, newNotification);
             if (notificationsList.size() > 5) {
                 notificationsList = notificationsList.subList(0, 5);
             }
 
-            // Сохраняем обратно в JSON
             JSONArray jsonArray = new JSONArray();
             for (Map<String, String> notification : notificationsList) {
                 JSONObject obj = new JSONObject(notification);
@@ -151,53 +207,40 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
         }
     }
 
-    private void showDialogDirectly(String title, String body) {
-        Log.d(TAG, "Showing dialog directly: " + title);
-
-        Intent dialogIntent = new Intent(this, MainActivity.class);
-        dialogIntent.setAction("SHOW_NOTIFICATION_FROM_SERVICE");
-        dialogIntent.putExtra("title", title);
-        dialogIntent.putExtra("body", body);
-        dialogIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
-        startActivity(dialogIntent);
-    }
-
     private void showSystemNotification(String title, String body, Map<String, String> data) {
         NotificationManager notificationManager =
                 (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
         createNotificationChannel(notificationManager);
 
-        // Создаем Intent для открытия приложения
         Intent intent = new Intent(this, MainActivity.class);
 
-        // Передаем title и body
-        intent.putExtra("title", title);
-        intent.putExtra("body", body);
+        // Передаем ВСЕ данные в интент, чтобы MainActivity мог их извлечь
+        intent.putExtra("gcm.notification.title", title);
+        intent.putExtra("gcm.notification.body", body);
         intent.putExtra("from_system_notification", true);
         intent.putExtra("timestamp", System.currentTimeMillis());
 
-        // Добавляем data если есть
+        // Передаем все найденные данные
+        intent.putExtra("title", title);
+        intent.putExtra("body", body);
+
+        // Также передаем все data поля
         if (data != null && !data.isEmpty()) {
             for (Map.Entry<String, String> entry : data.entrySet()) {
                 intent.putExtra(entry.getKey(), entry.getValue());
             }
         }
 
-        // Используем стандартное действие
         intent.setAction(Intent.ACTION_MAIN);
         intent.addCategory(Intent.CATEGORY_LAUNCHER);
-
-        // Флаги для правильного запуска
         intent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);
 
-        // Уникальные ID
         int requestCode = (int) (System.currentTimeMillis() % Integer.MAX_VALUE);
         int notificationUniqueId = (int) (System.currentTimeMillis() / 1000);
 
         PendingIntent pendingIntent = PendingIntent.getActivity(this, requestCode, intent,
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
 
-        // Создаем уведомление
         NotificationCompat.Builder builder =
                 new NotificationCompat.Builder(this, CHANNEL_ID)
                         .setContentTitle(title)
@@ -207,10 +250,7 @@ public class MyFirebaseMessagingService extends FirebaseMessagingService {
                         .setContentIntent(pendingIntent)
                         .setPriority(NotificationCompat.PRIORITY_HIGH);
 
-        // Добавляем расширенный текст
-        builder.setStyle(new NotificationCompat.BigTextStyle()
-                .bigText(body));
-
+        builder.setStyle(new NotificationCompat.BigTextStyle().bigText(body));
         notificationManager.notify(notificationUniqueId, builder.build());
         Log.d(TAG, "System notification shown: " + title);
     }

@@ -12,6 +12,39 @@
         android:layout_height="match_parent"
         />
     <!-- Кнопка для тестирования уведомления -->
+    <!-- Кнопка уведомлений (в правом верхнем углу) -->
+    <FrameLayout
+        android:id="@+id/notificationButton"
+        android:layout_width="56dp"
+        android:layout_height="56dp"
+        android:layout_alignParentEnd="true"
+        android:layout_alignParentTop="true"
+        android:layout_margin="16dp"
+        android:background="@drawable/notification_button_bg"
+        android:visibility="gone"
+        android:clickable="true"
+        android:focusable="true">
 
+        <ImageView
+            android:layout_width="24dp"
+            android:layout_height="24dp"
+            android:layout_gravity="center"
+            android:src="@drawable/ic_notifications" />
+
+        <!-- Бейдж с количеством уведомлений -->
+        <TextView
+            android:id="@+id/notificationBadge"
+            android:layout_width="20dp"
+            android:layout_height="20dp"
+            android:layout_gravity="top|end"
+            android:layout_marginTop="4dp"
+            android:layout_marginEnd="4dp"
+            android:background="@drawable/notification_badge_bg"
+            android:gravity="center"
+            android:textColor="@android:color/white"
+            android:textSize="12sp"
+            android:visibility="gone" />
+
+    </FrameLayout>
 
 </RelativeLayout>
